@@ -38,6 +38,8 @@ const BlackHoleSimulation = () => {
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.setSize(width, height);
+    const drawingBufferSize = new THREE.Vector2();
+    renderer.getDrawingBufferSize(drawingBufferSize);
     container.appendChild(renderer.domElement);
 
     const controls = new OrbitControls(orbitCamera, renderer.domElement);
@@ -104,7 +106,7 @@ const BlackHoleSimulation = () => {
           value: 1.0,
         },
         uResolution: {
-          value: new THREE.Vector2(width, height),
+          value: drawingBufferSize.clone(),
         },
         uCanvasTexture: {
           value: skyTexture,
@@ -178,7 +180,7 @@ const BlackHoleSimulation = () => {
       orbitCamera.aspect = nextWidth / nextHeight;
       orbitCamera.updateProjectionMatrix();
       renderer.setSize(nextWidth, nextHeight);
-      canvasMaterial.uniforms.uResolution.value.set(nextWidth, nextHeight);
+      renderer.getDrawingBufferSize(canvasMaterial.uniforms.uResolution.value);
     };
 
     window.addEventListener("resize", handleResize);

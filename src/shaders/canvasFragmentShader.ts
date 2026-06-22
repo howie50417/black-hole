@@ -236,31 +236,29 @@ vec4 compute(inout vec3 position, inout vec3 velocity, inout Ray ray){
         vec3 d = (k1 + 2.0 * (k2 + k3) + k4) / 6.0;
 
         vec3 ray_step = position + rk_delta + d * uStepSize;
-        float ray_step_dist = length(ray_step);
+        float disk_radius = length(ray_step.xz);
 
-        if(uAccretionDisk == 1.0 && dist > innerDiskRadius && dist < outerDiskRadius && ray_step.y * position.y < pow(uStepSize, diskFactor)){
+        if(uAccretionDisk == 1.0 && disk_radius > innerDiskRadius && disk_radius < outerDiskRadius && ray_step.y * position.y < pow(uStepSize, diskFactor)){
             // ---------------------------------------
             // --------- ACCRETION DISK --------------
             // ---------------------------------------
             float deltaDiskRadius = outerDiskRadius - innerDiskRadius;
-            float disk_dist = dist - innerDiskRadius;
-            vec3 uvw = vec3( 
-                (atan(ray_step.z, abs(ray_step.x)) / (PI * 2.0)) - 
-                (disk_flow / sqrt(dist)),
-
-                pow(disk_dist / deltaDiskRadius, 2.0) + ((flow_rate / (PI * 2.0)) / deltaDiskRadius),
-
-                ray_step.y * 0.5 + 0.5
-            ) / 2.0;
+            float disk_dist = disk_radius - innerDiskRadius;
+            float radial_t = clamp(disk_dist / deltaDiskRadius, 0.0, 1.0);
+            float angle = atan(ray_step.z, ray_step.x);
+            float animatedAngle = angle - uDiskTime / pow(disk_radius, 1.5);
+            float spiralAngle = animatedAngle - disk_flow / sqrt(disk_radius);
+            vec3 uvw = vec3(
+                cos(spiralAngle) * radial_t,
+                sin(spiralAngle) * radial_t,
+                pow(radial_t, 2.0) + ((flow_rate / (PI * 2.0)) / deltaDiskRadius)
+            );
             float disk_intensity = 1.0 - length(ray_step / vec3(outerDiskRadius, 1.0, outerDiskRadius));
-            disk_intensity *= smoothstep(innerDiskRadius, innerDiskRadius + 1.0, dist);
-            uvw.y += uDiskTime * 0.2;
-            uvw.z += uDiskTime * 0.12;
-            uvw.x -= uDiskTime;
+            disk_intensity *= smoothstep(innerDiskRadius, innerDiskRadius + 1.0, disk_radius);
 
             // float density_variation = fbm(2.0 * uvw, 5, 2.0, 1.0, 1.0);
-            float density_variation = fbm(position + uvw * 2.0, 3, 3.0, 1.2, 1.0);
-            disk_intensity *= inversesqrt(dist) * density_variation;
+            float density_variation = fbm(uvw * vec3(5.0, 5.0, 2.5), 4, 2.4, 1.2, 1.0);
+            disk_intensity *= inversesqrt(disk_radius) * density_variation;
             float dpth = step_size * (float(uMaxIterations) / 10.0) * disk_intensity;
             
             // -------> Doppler Shift

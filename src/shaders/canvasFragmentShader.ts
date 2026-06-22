@@ -12,17 +12,20 @@ const fragmentShader = `
 uniform float uAccretionDisk;
 uniform sampler2D uCanvasTexture;
 uniform vec2 uResolution;
-uniform vec3 uCameraTranslate;
+uniform vec3 uCameraPosition;
+uniform vec3 uCameraForward;
+uniform vec3 uCameraRight;
+uniform vec3 uCameraUp;
 uniform float uPov;
 uniform int uMaxIterations;
 uniform float uStepSize;
+uniform float uDiskTime;
 
 // -----------
 // -variables-
 // -----------
 
 vec3 bh_pos = vec3(0.0, 0.0, 0.0);
-vec3 camera_pos = vec3(0.0, 0.05, 20.0);
 
 float innerDiskRadius = 2.0;
 float outerDiskRadius = 8.0;
@@ -148,37 +151,19 @@ struct Ray{
 };
 
 Ray pixelToWorldRay(){
-    vec3 up = vec3(0.0, 1.0, 0.0);
-    vec4 look_from = rotate_y(camera_pos.x+uCameraTranslate.x) * rotate_x(camera_pos.y+uCameraTranslate.y) * vec4(camera_pos+uCameraTranslate, 1.0);
-    vec3 view = vec3(-look_from.x, -look_from.y, -look_from.z);
-
-    vec3 n_view = normalize(view);
-    vec3 n_upview = normalize(cross(up, n_view));
-    vec3 c_vup = cross(n_view, n_upview);
-
-    mat4 offset = mat4(
-        vec4(n_upview, 0.0),
-        vec4(c_vup, 0.0),
-        vec4(n_view, 0.0),
-        vec4(0.0, 0.0, 0.0 , 1.0)
-    ) ;
-    mat4 transform = translate_RowOrder(-0.5 * uResolution.x, -0.5 * uResolution.y, PROJECTION_DISTANCE);
-    mat4 look_transform = translate_RowOrder(look_from.x, look_from.y, look_from.z);
-
     float pov_rad = radians(uPov);
-    float h = PROJECTION_DISTANCE * 2.0 * tan(0.5 * pov_rad);
-    mat4 scaled_transform = scale(
-        h/(uResolution.y * SCALE_FACTOR),
-        h/(uResolution.y * SCALE_FACTOR),
-        1.0
+    float image_plane_height = PROJECTION_DISTANCE * 2.0 * tan(0.5 * pov_rad);
+    vec2 screen = (gl_FragCoord.xy / uResolution.xy) * 2.0 - 1.0;
+    screen.x *= uResolution.x / uResolution.y;
+    vec3 direction = normalize(
+        uCameraForward * PROJECTION_DISTANCE +
+        uCameraRight * screen.x * image_plane_height * 0.5 +
+        uCameraUp * screen.y * image_plane_height * 0.5
     );
 
-    vec4 local_pixel_coord = vec4(gl_FragCoord.x, gl_FragCoord.y, 0.0, 1.0);
-    vec4 world_coord = look_transform * offset * scaled_transform * transform * local_pixel_coord;
-
     Ray ray;
-    ray.origin = look_from;
-    ray.direction = world_coord - look_from;
+    ray.origin = vec4(uCameraPosition, 1.0);
+    ray.direction = vec4(direction, 0.0);
 
     return ray;
 }
@@ -269,9 +254,9 @@ vec4 compute(inout vec3 position, inout vec3 velocity, inout Ray ray){
             ) / 2.0;
             float disk_intensity = 1.0 - length(ray_step / vec3(outerDiskRadius, 1.0, outerDiskRadius));
             disk_intensity *= smoothstep(innerDiskRadius, innerDiskRadius + 1.0, dist);
-            uvw.y += uCameraTranslate.x;
-            uvw.z += uCameraTranslate.x;
-            uvw.x -= uCameraTranslate.x;
+            uvw.y += uDiskTime * 0.2;
+            uvw.z += uDiskTime * 0.12;
+            uvw.x -= uDiskTime;
 
             // float density_variation = fbm(2.0 * uvw, 5, 2.0, 1.0, 1.0);
             float density_variation = fbm(position + uvw * 2.0, 3, 3.0, 1.2, 1.0);
@@ -283,7 +268,7 @@ vec4 compute(inout vec3 position, inout vec3 velocity, inout Ray ray){
             float v = dot(ray.direction.xyz, shiftD);
             float dopplerShift = sqrt((1.0 - v)/(1.0 + v));
             // -------> Gravitational Shift (Redshit)
-            float redshift = sqrt((1.0 - 2.0 / dist) / (1.0 - 2.0 / length(camera_pos)));
+            float redshift = sqrt((1.0 - 2.0 / dist) / (1.0 - 2.0 / length(uCameraPosition)));
             
             vec3 color_rgb = vec3(1.0, 0.65, 0.50) * dopplerShift * redshift * dpth ;
 

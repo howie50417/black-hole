@@ -1,128 +1,72 @@
-import React, { useCallback, useEffect, useRef } from "react";
+import { useEffect, useRef } from "react";
 import * as THREE from "three";
+import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import skyTextureUrl from "../assets/sky2.jpg";
 import canvasFragmentShader from "../shaders/canvasFragmentShader";
 import canvasVertexShader from "../shaders/canvasVertexShader";
-import { degreeToRadian, mapping } from "../utils/math";
 
-export interface SimulationSettings {
-  accretion_disk: boolean;
-  animate: boolean;
-  speed: number;
-  max_iterations: number;
-}
+const CAMERA_FOV = 75;
+const MAX_ITERATIONS = 400;
+const MIN_CAMERA_DISTANCE = 3;
+const MAX_CAMERA_DISTANCE = 80;
+const POLAR_LIMIT_PADDING = 0.01;
+const DISK_ROTATION_SPEED = 0.65;
 
-interface BlackHoleSimulationProps {
-  settings: SimulationSettings;
-  onSettingsChange: (
-    key: keyof SimulationSettings,
-    value: SimulationSettings[keyof SimulationSettings]
-  ) => void;
-  isPaused: boolean;
-}
-
-const BlackHoleSimulation: React.FC<BlackHoleSimulationProps> = ({
-  settings,
-  onSettingsChange,
-  isPaused,
-}) => {
+const BlackHoleSimulation = () => {
   const containerRef = useRef<HTMLDivElement>(null);
-  const sceneRef = useRef<THREE.Scene | null>(null);
-  const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
-  const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
-  const canvasRef = useRef<THREE.Mesh | null>(null);
-  const canvasMaterialRef = useRef<THREE.ShaderMaterial | null>(null);
-  const animationIdRef = useRef<number | null>(null);
-
-  const offsetCameraPosition = useRef(new THREE.Vector3(0, 0, 0));
-
-  const startAnimation = useCallback(() => {
-    if (animationIdRef.current) return;
-
-    const animate = () => {
-      if (!settings.animate || isPaused) return;
-
-      offsetCameraPosition.current.x += settings.speed;
-
-      if (
-        offsetCameraPosition.current.x > 4 ||
-        offsetCameraPosition.current.x <= -4
-      ) {
-        // Reverse direction by updating the speed through the callback
-        onSettingsChange("speed", settings.speed * -1);
-      }
-
-      if (rendererRef.current && sceneRef.current && cameraRef.current) {
-        rendererRef.current.render(sceneRef.current, cameraRef.current);
-      }
-
-      animationIdRef.current = requestAnimationFrame(animate);
-    };
-
-    animationIdRef.current = requestAnimationFrame(animate);
-  }, [settings.animate, isPaused, settings.speed, onSettingsChange]);
-
-  const stopAnimation = useCallback(() => {
-    if (animationIdRef.current) {
-      cancelAnimationFrame(animationIdRef.current);
-      animationIdRef.current = null;
-    }
-  }, []);
 
   useEffect(() => {
     if (!containerRef.current) return;
 
-    // Get container dimensions instead of full window
     const container = containerRef.current;
-    const w = container.clientWidth || window.innerWidth;
-    const h = container.clientHeight || window.innerHeight;
-    const aspect = w / h;
+    const width = container.clientWidth || window.innerWidth;
+    const height = container.clientHeight || window.innerHeight;
 
-    const fov = 50;
-    const near = 0.1;
-    const far = 1000;
-
-    // Create scene
     const scene = new THREE.Scene();
-    sceneRef.current = scene;
+    const renderCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
 
-    // Create camera
-    const camera = new THREE.PerspectiveCamera(fov, aspect, near, far);
-    camera.position.z = 1;
-    cameraRef.current = camera;
+    const orbitCamera = new THREE.PerspectiveCamera(
+      CAMERA_FOV,
+      width / height,
+      0.1,
+      1000
+    );
+    orbitCamera.position.set(0, 0.05, 20);
+    orbitCamera.lookAt(0, 0, 0);
 
-    const fov_y = camera.position.z * Math.tan(degreeToRadian(fov) / 2) * 2;
-
-    // Create renderer
-    const renderer = new THREE.WebGLRenderer({
-      antialias: true,
-    });
-    renderer.setSize(w, h);
-    renderer.setPixelRatio(window.devicePixelRatio);
-    rendererRef.current = renderer;
-
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(width, height);
     container.appendChild(renderer.domElement);
 
-    // Create plane geometry
-    const canvas_geo = new THREE.PlaneGeometry(fov_y * camera.aspect, fov_y);
+    const controls = new OrbitControls(orbitCamera, renderer.domElement);
+    controls.target.set(0, 0, 0);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.08;
+    controls.enablePan = false;
+    controls.autoRotate = false;
+    controls.minDistance = MIN_CAMERA_DISTANCE;
+    controls.maxDistance = MAX_CAMERA_DISTANCE;
+    controls.minPolarAngle = POLAR_LIMIT_PADDING;
+    controls.maxPolarAngle = Math.PI - POLAR_LIMIT_PADDING;
+    controls.update();
 
-    // Simplified procedural texture creation function
-    const createProceduralTexture = (
-      scene: THREE.Scene,
-      camera: THREE.Camera,
-      renderer: THREE.WebGLRenderer
-    ) => {
-      const canvas = document.createElement("canvas");
-      canvas.width = 1024;
-      canvas.height = 1024;
-      const context = canvas.getContext("2d")!;
+    const createProceduralTexture = () => {
+      const fallbackCanvas = document.createElement("canvas");
+      fallbackCanvas.width = 1024;
+      fallbackCanvas.height = 1024;
+
+      const context = fallbackCanvas.getContext("2d");
+      if (!context) return null;
+
       const gradient = context.createRadialGradient(512, 512, 0, 512, 512, 512);
       gradient.addColorStop(0, "#001a33");
       gradient.addColorStop(1, "#000000");
       context.fillStyle = gradient;
       context.fillRect(0, 0, 1024, 1024);
       context.fillStyle = "white";
-      for (let i = 0; i < 200; i++) {
+
+      for (let i = 0; i < 200; i += 1) {
         const x = Math.random() * 1024;
         const y = Math.random() * 1024;
         const size = Math.random() * 2 + 0.5;
@@ -131,147 +75,130 @@ const BlackHoleSimulation: React.FC<BlackHoleSimulationProps> = ({
         context.arc(x, y, size, 0, Math.PI * 2);
         context.fill();
       }
+
       context.globalAlpha = 1;
-      const fallbackTexture = new THREE.CanvasTexture(canvas);
-      if (canvasMaterialRef.current) {
-        canvasMaterialRef.current.uniforms.uCanvasTexture.value =
-          fallbackTexture;
-        renderer.render(scene, camera);
-      }
+      return new THREE.CanvasTexture(fallbackCanvas);
     };
 
-    // Load texture using the imported URL
-    const loader = new THREE.TextureLoader();
-    const canvas_texture = loader.load(
+    const textureLoader = new THREE.TextureLoader();
+    let fallbackTexture: THREE.Texture | null = null;
+    const skyTexture = textureLoader.load(
       skyTextureUrl,
       (texture) => {
-        if (canvasMaterialRef.current) {
-          canvasMaterialRef.current.uniforms.uCanvasTexture.value = texture;
-          renderer.render(scene, camera);
-        }
+        canvasMaterial.uniforms.uCanvasTexture.value = texture;
       },
       undefined,
       () => {
-        // If texture loading fails, fall back to procedural
-        createProceduralTexture(scene, camera, renderer);
+        fallbackTexture = createProceduralTexture();
+        if (fallbackTexture) {
+          canvasMaterial.uniforms.uCanvasTexture.value = fallbackTexture;
+        }
       }
     );
 
-    const canvas_mat = new THREE.ShaderMaterial({
+    const canvasMaterial = new THREE.ShaderMaterial({
       uniforms: {
         uAccretionDisk: {
-          value: settings.accretion_disk ? 1 : 0,
+          value: 1.0,
         },
         uResolution: {
-          value: new THREE.Vector2(w, h),
+          value: new THREE.Vector2(width, height),
         },
         uCanvasTexture: {
-          value: canvas_texture,
+          value: skyTexture,
         },
         uMaxIterations: {
-          value: settings.max_iterations,
+          value: MAX_ITERATIONS,
         },
         uPov: {
-          value: 75.0,
+          value: CAMERA_FOV,
         },
         uStepSize: {
-          value: 2.5 / settings.max_iterations,
+          value: 2.5 / MAX_ITERATIONS,
         },
-        uCameraTranslate: {
-          value: offsetCameraPosition.current,
+        uCameraPosition: {
+          value: orbitCamera.position.clone(),
+        },
+        uCameraForward: {
+          value: new THREE.Vector3(0, 0, -1),
+        },
+        uCameraRight: {
+          value: new THREE.Vector3(1, 0, 0),
+        },
+        uCameraUp: {
+          value: new THREE.Vector3(0, 1, 0),
+        },
+        uDiskTime: {
+          value: 0,
         },
       },
       vertexShader: canvasVertexShader,
       fragmentShader: canvasFragmentShader,
     });
 
-    canvasMaterialRef.current = canvas_mat;
+    const screenQuad = new THREE.Mesh(
+      new THREE.PlaneGeometry(2, 2),
+      canvasMaterial
+    );
+    scene.add(screenQuad);
 
-    const canvas = new THREE.Mesh(canvas_geo, canvas_mat);
-    canvasRef.current = canvas;
-    scene.add(canvas);
+    const syncCameraUniforms = () => {
+      orbitCamera.updateMatrixWorld();
+      orbitCamera.getWorldDirection(canvasMaterial.uniforms.uCameraForward.value);
 
-    // Event listeners
-    const handleWheel = (event: WheelEvent) => {
-      offsetCameraPosition.current.z +=
-        mapping(event.deltaY, -h, h, -10, 10) * 0.3;
-      renderer.render(scene, camera);
+      const matrixElements = orbitCamera.matrixWorld.elements;
+      canvasMaterial.uniforms.uCameraPosition.value.copy(orbitCamera.position);
+      canvasMaterial.uniforms.uCameraRight.value
+        .set(matrixElements[0], matrixElements[1], matrixElements[2])
+        .normalize();
+      canvasMaterial.uniforms.uCameraUp.value
+        .set(matrixElements[4], matrixElements[5], matrixElements[6])
+        .normalize();
+    };
+
+    const clock = new THREE.Clock();
+    let animationFrameId = 0;
+
+    const animate = () => {
+      controls.update();
+      syncCameraUniforms();
+      canvasMaterial.uniforms.uDiskTime.value =
+        clock.getElapsedTime() * DISK_ROTATION_SPEED;
+
+      renderer.render(scene, renderCamera);
+      animationFrameId = requestAnimationFrame(animate);
     };
 
     const handleResize = () => {
-      if (!containerRef.current || !rendererRef.current || !cameraRef.current)
-        return;
+      const nextWidth = container.clientWidth || window.innerWidth;
+      const nextHeight = container.clientHeight || window.innerHeight;
 
-      const container = containerRef.current;
-      const newW = container.clientWidth || window.innerWidth;
-      const newH = container.clientHeight || window.innerHeight;
-
-      // Update camera aspect ratio
-      cameraRef.current.aspect = newW / newH;
-      cameraRef.current.updateProjectionMatrix();
-
-      // Update renderer size
-      rendererRef.current.setSize(newW, newH);
-
-      // Update shader uniforms
-      if (canvasMaterialRef.current) {
-        canvasMaterialRef.current.uniforms.uResolution.value =
-          new THREE.Vector2(newW, newH);
-      }
-
-      // Re-render
-      rendererRef.current.render(scene, camera);
+      orbitCamera.aspect = nextWidth / nextHeight;
+      orbitCamera.updateProjectionMatrix();
+      renderer.setSize(nextWidth, nextHeight);
+      canvasMaterial.uniforms.uResolution.value.set(nextWidth, nextHeight);
     };
 
-    window.addEventListener("wheel", handleWheel);
     window.addEventListener("resize", handleResize);
+    animate();
 
-    // Initial render
-    renderer.render(scene, camera);
-
-    // Cleanup function
     return () => {
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-      const container = containerRef.current; // Copy ref value to avoid stale closure
-      stopAnimation();
-      window.removeEventListener("wheel", handleWheel);
+      cancelAnimationFrame(animationFrameId);
       window.removeEventListener("resize", handleResize);
+      controls.dispose();
+      screenQuad.geometry.dispose();
+      canvasMaterial.dispose();
+      skyTexture.dispose();
+      fallbackTexture?.dispose();
+      renderer.dispose();
 
-      if (container && renderer.domElement) {
+      if (container.contains(renderer.domElement)) {
         container.removeChild(renderer.domElement);
       }
-
-      renderer.dispose();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Update material uniforms when settings change
-  useEffect(() => {
-    if (canvasMaterialRef.current) {
-      canvasMaterialRef.current.uniforms.uAccretionDisk.value =
-        settings.accretion_disk ? 1 : 0;
-      canvasMaterialRef.current.uniforms.uMaxIterations.value =
-        settings.max_iterations;
-      canvasMaterialRef.current.uniforms.uStepSize.value =
-        2.5 / settings.max_iterations;
-
-      if (rendererRef.current && sceneRef.current && cameraRef.current) {
-        rendererRef.current.render(sceneRef.current, cameraRef.current);
-      }
-    }
-  }, [settings.accretion_disk, settings.max_iterations]);
-
-  // Handle animation
-  useEffect(() => {
-    if (settings.animate && !isPaused) {
-      startAnimation();
-    } else {
-      stopAnimation();
-    }
-  }, [settings.animate, isPaused, startAnimation, stopAnimation]);
-
-  return <div ref={containerRef} style={{ width: "100%", height: "100%" }} />;
+  return <div ref={containerRef} className="simulation-canvas" />;
 };
 
 export default BlackHoleSimulation;

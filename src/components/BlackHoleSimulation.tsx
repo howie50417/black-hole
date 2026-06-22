@@ -10,6 +10,7 @@ const MAX_ITERATIONS = 400;
 const MIN_CAMERA_DISTANCE = 3;
 const MAX_CAMERA_DISTANCE = 80;
 const POLAR_LIMIT_PADDING = 0.01;
+const CAMERA_AUTO_ROTATE_SPEED = 0.35;
 const DISK_ROTATION_SPEED = 36.0;
 
 const BlackHoleSimulation = () => {
@@ -44,7 +45,8 @@ const BlackHoleSimulation = () => {
     controls.enableDamping = true;
     controls.dampingFactor = 0.08;
     controls.enablePan = false;
-    controls.autoRotate = false;
+    controls.autoRotate = true;
+    controls.autoRotateSpeed = CAMERA_AUTO_ROTATE_SPEED;
     controls.minDistance = MIN_CAMERA_DISTANCE;
     controls.maxDistance = MAX_CAMERA_DISTANCE;
     controls.minPolarAngle = POLAR_LIMIT_PADDING;

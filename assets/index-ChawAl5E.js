@@ -3895,10 +3895,6 @@ vec3 bh_pos = vec3(0.0, 0.0, 0.0);
 float innerDiskRadius = 2.0;
 float outerDiskRadius = 8.0;
 
-float diskFactor = 3.0;
-float disk_flow = 10.0;
-float flow_rate = 0.6;
-
 
 // -----------------
 // MATRIX TRANSFORMS
@@ -4072,6 +4068,56 @@ vec4 GetColor(Ray ray){
     return texture2D(uCanvasTexture, new_coord);
 }
 
+vec3 accretionDiskColor(vec3 hit, Ray ray, float stepSize){
+    float radius = length(hit.xz);
+    float radial_t = clamp((radius - innerDiskRadius) / (outerDiskRadius - innerDiskRadius), 0.0, 1.0);
+    float angle = atan(hit.z, hit.x);
+    float disk_time = uDiskTime;
+
+    float coherent_rotation = disk_time * 0.09;
+    float kepler_rotation = disk_time * 0.34 / pow(radius, 1.5);
+    float arm_angle = angle - coherent_rotation;
+    float local_angle = angle - coherent_rotation - kepler_rotation;
+
+    vec2 arm_sample = vec2(cos(arm_angle), sin(arm_angle)) * radius;
+    vec2 local_sample = vec2(cos(local_angle), sin(local_angle)) * radius;
+
+    float fine_noise = fbm(vec3(local_sample * 1.7, radial_t * 3.4), 4, 2.15, 1.1, 0.9);
+    float grain_noise = fbm(vec3(local_sample * 4.2, radial_t * 7.0 + disk_time * 0.012), 3, 2.4, 1.0, 0.75);
+
+    float pitch = 3.55;
+    float two_arm_spiral = 2.0 * arm_angle - pitch * log(radius / innerDiskRadius);
+    float three_arm_detail = 3.0 * arm_angle - pitch * 1.28 * log(radius / innerDiskRadius) + fine_noise * 0.55;
+    float primary_arm = pow(0.5 + 0.5 * cos(two_arm_spiral), 5.0);
+    float secondary_arm = pow(0.5 + 0.5 * cos(three_arm_detail), 8.0);
+    float arm_mask = clamp(primary_arm + secondary_arm * 0.35, 0.0, 1.0);
+    float spiral_structure = mix(0.48, 2.35, smoothstep(0.08, 0.82, arm_mask));
+
+    float rotating_streaks = 0.5 + 0.5 * sin(local_angle * 11.0 + radius * 3.8 + fine_noise * 2.2);
+    float hot_streaks = mix(0.78, 1.48, smoothstep(0.54, 0.96, rotating_streaks));
+
+    float inner_edge = smoothstep(innerDiskRadius, innerDiskRadius + 0.35, radius);
+    float outer_edge = 1.0 - smoothstep(outerDiskRadius - 1.2, outerDiskRadius, radius);
+    float disk_alpha = inner_edge * outer_edge;
+
+    float heat = pow(1.0 - radial_t, 1.55);
+    vec3 hot_color = vec3(1.0, 0.88, 0.58);
+    vec3 mid_color = vec3(1.0, 0.42, 0.12);
+    vec3 outer_color = vec3(0.42, 0.09, 0.035);
+    vec3 disk_color = mix(mid_color, outer_color, smoothstep(0.32, 1.0, radial_t));
+    disk_color = mix(disk_color, hot_color, 1.0 - smoothstep(0.0, 0.18, radial_t));
+
+    vec3 tangent = normalize(vec3(-hit.z, 0.0, hit.x));
+    float orbital_alignment = dot(normalize(ray.direction.xyz), tangent);
+    float doppler = pow(clamp(1.0 + orbital_alignment * 0.68, 0.34, 1.92), 2.0);
+
+    float turbulence = mix(0.78, 1.28, fine_noise) * mix(0.90, 1.14, grain_noise);
+    float optical_depth = clamp(stepSize * 22.0, 0.18, 2.05);
+    float luminosity = disk_alpha * optical_depth * (0.68 + heat * 4.4) * spiral_structure * hot_streaks * turbulence * doppler;
+
+    return disk_color * luminosity;
+}
+
 vec4 compute(inout vec3 position, inout vec3 velocity, inout Ray ray){
     // check if an object is in the event horizon or not
     // and perform the integration 
@@ -4100,50 +4146,25 @@ vec4 compute(inout vec3 position, inout vec3 velocity, inout Ray ray){
 
         vec3 d = (k1 + 2.0 * (k2 + k3) + k4) / 6.0;
 
-        vec3 ray_step = position + rk_delta + d * uStepSize;
-        float ray_step_dist = length(ray_step);
+        vec3 previousPosition = position;
+        vec3 nextPosition = position + rk_delta;
 
-        if(uAccretionDisk == 1.0 && dist > innerDiskRadius && dist < outerDiskRadius && ray_step.y * position.y < pow(uStepSize, diskFactor)){
-            // ---------------------------------------
-            // --------- ACCRETION DISK --------------
-            // ---------------------------------------
-            float deltaDiskRadius = outerDiskRadius - innerDiskRadius;
-            float disk_dist = dist - innerDiskRadius;
-            vec3 uvw = vec3( 
-                (atan(ray_step.z, abs(ray_step.x)) / (PI * 2.0)) - 
-                (disk_flow / sqrt(dist)),
+        if(uAccretionDisk == 1.0 && abs(previousPosition.y - nextPosition.y) > 0.0001 && previousPosition.y * nextPosition.y <= 0.0){
+            float crossing = previousPosition.y / (previousPosition.y - nextPosition.y);
+            if(crossing >= 0.0 && crossing <= 1.0){
+                vec3 disk_hit = mix(previousPosition, nextPosition, crossing);
+                float disk_radius = length(disk_hit.xz);
 
-                pow(disk_dist / deltaDiskRadius, 2.0) + ((flow_rate / (PI * 2.0)) / deltaDiskRadius),
+                if(disk_radius > innerDiskRadius && disk_radius < outerDiskRadius){
+                    vec3 hit_velocity = normalize(velocity + d * crossing);
+                    Ray background_ray;
+                    background_ray.origin = vec4(disk_hit, 1.0);
+                    background_ray.direction = vec4(hit_velocity, 0.0);
 
-                ray_step.y * 0.5 + 0.5
-            ) / 2.0;
-            float disk_intensity = 1.0 - length(ray_step / vec3(outerDiskRadius, 1.0, outerDiskRadius));
-            disk_intensity *= smoothstep(innerDiskRadius, innerDiskRadius + 1.0, dist);
-            uvw.y += uDiskTime * 0.2;
-            uvw.z += uDiskTime * 0.12;
-            uvw.x -= uDiskTime;
-
-            // float density_variation = fbm(2.0 * uvw, 5, 2.0, 1.0, 1.0);
-            float density_variation = fbm(position + uvw * 2.0, 3, 3.0, 1.2, 1.0);
-            disk_intensity *= inversesqrt(dist) * density_variation;
-            float dpth = step_size * (float(uMaxIterations) / 10.0) * disk_intensity;
-            
-            // -------> Doppler Shift
-            vec3 shiftD = 0.6 * cross(normalize(ray_step), vec3(0.0, 1.0, 0.0));
-            float v = dot(ray.direction.xyz, shiftD);
-            float dopplerShift = sqrt((1.0 - v)/(1.0 + v));
-            // -------> Gravitational Shift (Redshit)
-            float redshift = sqrt((1.0 - 2.0 / dist) / (1.0 - 2.0 / length(uCameraPosition)));
-            
-            vec3 color_rgb = vec3(1.0, 0.65, 0.50) * dopplerShift * redshift * dpth ;
-
-            ray.origin = vec4(position, 1.0);
-            ray.direction = vec4(velocity, 0.0);
-
-            // Blending the accretion disk with the background
-            vec4 disk_color = GetColor(ray) + vec4(color_rgb, 1.0);
-
-            return disk_color;
+                    vec3 disk_emission = accretionDiskColor(disk_hit, background_ray, step_size);
+                    return GetColor(background_ray) + vec4(disk_emission, 1.0);
+                }
+            }
         }
 
         if(dist >= BACKGROUND_DISTANCE){
@@ -4187,4 +4208,4 @@ void main() {
     gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
     vu = uv;
   }
-`,Mm=75,Tm=400,wM=3,AM=80,wm=.01,RM=.65,CM=()=>{const s=Xc.useRef(null);return Xc.useEffect(()=>{if(!s.current)return;const e=s.current,n=e.clientWidth||window.innerWidth,r=e.clientHeight||window.innerHeight,a=new d0,u=new Qm(-1,1,1,-1,0,1),f=new Kn(Mm,n/r,.1,1e3);f.position.set(0,.05,20),f.lookAt(0,0,0);const d=new aM({antialias:!0});d.setPixelRatio(Math.min(window.devicePixelRatio,2)),d.setSize(n,r),e.appendChild(d.domElement);const p=new uM(f,d.domElement);p.target.set(0,0,0),p.enableDamping=!0,p.dampingFactor=.08,p.enablePan=!1,p.autoRotate=!1,p.minDistance=wM,p.maxDistance=AM,p.minPolarAngle=wm,p.maxPolarAngle=Math.PI-wm,p.update();const m=()=>{const C=document.createElement("canvas");C.width=1024,C.height=1024;const G=C.getContext("2d");if(!G)return null;const z=G.createRadialGradient(512,512,0,512,512,512);z.addColorStop(0,"#001a33"),z.addColorStop(1,"#000000"),G.fillStyle=z,G.fillRect(0,0,1024,1024),G.fillStyle="white";for(let N=0;N<200;N+=1){const Y=Math.random()*1024,P=Math.random()*1024,A=Math.random()*2+.5;G.globalAlpha=Math.random()*.8+.2,G.beginPath(),G.arc(Y,P,A,0,Math.PI*2),G.fill()}return G.globalAlpha=1,new m0(C)},_=new S0;let v=null;const x=_.load(EM,C=>{S.uniforms.uCanvasTexture.value=C},void 0,()=>{v=m(),v&&(S.uniforms.uCanvasTexture.value=v)}),S=new Hi({uniforms:{uAccretionDisk:{value:1},uResolution:{value:new ut(n,r)},uCanvasTexture:{value:x},uMaxIterations:{value:Tm},uPov:{value:Mm},uStepSize:{value:2.5/Tm},uCameraPosition:{value:f.position.clone()},uCameraForward:{value:new Z(0,0,-1)},uCameraRight:{value:new Z(1,0,0)},uCameraUp:{value:new Z(0,1,0)},uDiskTime:{value:0}},vertexShader:TM,fragmentShader:MM}),w=new gi(new Vo(2,2),S);a.add(w);const R=()=>{f.updateMatrixWorld(),f.getWorldDirection(S.uniforms.uCameraForward.value);const C=f.matrixWorld.elements;S.uniforms.uCameraPosition.value.copy(f.position),S.uniforms.uCameraRight.value.set(C[0],C[1],C[2]).normalize(),S.uniforms.uCameraUp.value.set(C[4],C[5],C[6]).normalize()},y=new M0;let g=0;const I=()=>{p.update(),R(),S.uniforms.uDiskTime.value=y.getElapsedTime()*RM,d.render(a,u),g=requestAnimationFrame(I)},L=()=>{const C=e.clientWidth||window.innerWidth,G=e.clientHeight||window.innerHeight;f.aspect=C/G,f.updateProjectionMatrix(),d.setSize(C,G),S.uniforms.uResolution.value.set(C,G)};return window.addEventListener("resize",L),I(),()=>{cancelAnimationFrame(g),window.removeEventListener("resize",L),p.dispose(),w.geometry.dispose(),S.dispose(),x.dispose(),v==null||v.dispose(),d.dispose(),e.contains(d.domElement)&&e.removeChild(d.domElement)}},[]),Lo.jsx("div",{ref:s,className:"simulation-canvas"})};function PM(){return Lo.jsx("div",{className:"App",children:Lo.jsx(CM,{})})}j_.createRoot(document.getElementById("root")).render(Lo.jsx(B_.StrictMode,{children:Lo.jsx(PM,{})}));
+`,Mm=75,Tm=400,wM=3,AM=80,wm=.01,RM=.95,CM=36,PM=()=>{const s=Xc.useRef(null);return Xc.useEffect(()=>{if(!s.current)return;const e=s.current,n=e.clientWidth||window.innerWidth,r=e.clientHeight||window.innerHeight,a=new d0,u=new Qm(-1,1,1,-1,0,1),f=new Kn(Mm,n/r,.1,1e3);f.position.set(0,.05,20),f.lookAt(0,0,0);const d=new aM({antialias:!0});d.setPixelRatio(Math.min(window.devicePixelRatio,2)),d.setSize(n,r),e.appendChild(d.domElement);const p=new uM(f,d.domElement);p.target.set(0,0,0),p.enableDamping=!0,p.dampingFactor=.08,p.enablePan=!1,p.autoRotate=!0,p.autoRotateSpeed=RM,p.minDistance=wM,p.maxDistance=AM,p.minPolarAngle=wm,p.maxPolarAngle=Math.PI-wm,p.update();const m=()=>{const C=document.createElement("canvas");C.width=1024,C.height=1024;const G=C.getContext("2d");if(!G)return null;const z=G.createRadialGradient(512,512,0,512,512,512);z.addColorStop(0,"#001a33"),z.addColorStop(1,"#000000"),G.fillStyle=z,G.fillRect(0,0,1024,1024),G.fillStyle="white";for(let N=0;N<200;N+=1){const Y=Math.random()*1024,P=Math.random()*1024,A=Math.random()*2+.5;G.globalAlpha=Math.random()*.8+.2,G.beginPath(),G.arc(Y,P,A,0,Math.PI*2),G.fill()}return G.globalAlpha=1,new m0(C)},_=new S0;let v=null;const x=_.load(EM,C=>{S.uniforms.uCanvasTexture.value=C},void 0,()=>{v=m(),v&&(S.uniforms.uCanvasTexture.value=v)}),S=new Hi({uniforms:{uAccretionDisk:{value:1},uResolution:{value:new ut(n,r)},uCanvasTexture:{value:x},uMaxIterations:{value:Tm},uPov:{value:Mm},uStepSize:{value:2.5/Tm},uCameraPosition:{value:f.position.clone()},uCameraForward:{value:new Z(0,0,-1)},uCameraRight:{value:new Z(1,0,0)},uCameraUp:{value:new Z(0,1,0)},uDiskTime:{value:0}},vertexShader:TM,fragmentShader:MM}),w=new gi(new Vo(2,2),S);a.add(w);const R=()=>{f.updateMatrixWorld(),f.getWorldDirection(S.uniforms.uCameraForward.value);const C=f.matrixWorld.elements;S.uniforms.uCameraPosition.value.copy(f.position),S.uniforms.uCameraRight.value.set(C[0],C[1],C[2]).normalize(),S.uniforms.uCameraUp.value.set(C[4],C[5],C[6]).normalize()},y=new M0;let g=0;const I=()=>{p.update(),R(),S.uniforms.uDiskTime.value=y.getElapsedTime()*CM,d.render(a,u),g=requestAnimationFrame(I)},L=()=>{const C=e.clientWidth||window.innerWidth,G=e.clientHeight||window.innerHeight;f.aspect=C/G,f.updateProjectionMatrix(),d.setSize(C,G),S.uniforms.uResolution.value.set(C,G)};return window.addEventListener("resize",L),I(),()=>{cancelAnimationFrame(g),window.removeEventListener("resize",L),p.dispose(),w.geometry.dispose(),S.dispose(),x.dispose(),v==null||v.dispose(),d.dispose(),e.contains(d.domElement)&&e.removeChild(d.domElement)}},[]),Lo.jsx("div",{ref:s,className:"simulation-canvas"})};function bM(){return Lo.jsx("div",{className:"App",children:Lo.jsx(PM,{})})}j_.createRoot(document.getElementById("root")).render(Lo.jsx(B_.StrictMode,{children:Lo.jsx(bM,{})}));

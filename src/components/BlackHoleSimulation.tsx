@@ -10,7 +10,7 @@ const MAX_ITERATIONS = 400;
 const MIN_CAMERA_DISTANCE = 3;
 const MAX_CAMERA_DISTANCE = 80;
 const POLAR_LIMIT_PADDING = 0.01;
-const DISK_ROTATION_SPEED = 6.0;
+const DISK_ROTATION_SPEED = 36.0;
 
 const BlackHoleSimulation = () => {
   const containerRef = useRef<HTMLDivElement>(null);

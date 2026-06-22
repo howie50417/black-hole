@@ -30,10 +30,6 @@ vec3 bh_pos = vec3(0.0, 0.0, 0.0);
 float innerDiskRadius = 2.0;
 float outerDiskRadius = 8.0;
 
-float diskFactor = 3.0;
-float disk_flow = 10.0;
-float flow_rate = 0.6;
-
 
 // -----------------
 // MATRIX TRANSFORMS
@@ -207,6 +203,56 @@ vec4 GetColor(Ray ray){
     return texture2D(uCanvasTexture, new_coord);
 }
 
+vec3 accretionDiskColor(vec3 hit, Ray ray, float stepSize){
+    float radius = length(hit.xz);
+    float radial_t = clamp((radius - innerDiskRadius) / (outerDiskRadius - innerDiskRadius), 0.0, 1.0);
+    float angle = atan(hit.z, hit.x);
+    float disk_time = uDiskTime;
+
+    float coherent_rotation = disk_time * 0.09;
+    float kepler_rotation = disk_time * 0.34 / pow(radius, 1.5);
+    float arm_angle = angle - coherent_rotation;
+    float local_angle = angle - coherent_rotation - kepler_rotation;
+
+    vec2 arm_sample = vec2(cos(arm_angle), sin(arm_angle)) * radius;
+    vec2 local_sample = vec2(cos(local_angle), sin(local_angle)) * radius;
+
+    float fine_noise = fbm(vec3(local_sample * 1.7, radial_t * 3.4), 4, 2.15, 1.1, 0.9);
+    float grain_noise = fbm(vec3(local_sample * 4.2, radial_t * 7.0 + disk_time * 0.012), 3, 2.4, 1.0, 0.75);
+
+    float pitch = 3.55;
+    float two_arm_spiral = 2.0 * arm_angle - pitch * log(radius / innerDiskRadius);
+    float three_arm_detail = 3.0 * arm_angle - pitch * 1.28 * log(radius / innerDiskRadius) + fine_noise * 0.55;
+    float primary_arm = pow(0.5 + 0.5 * cos(two_arm_spiral), 5.0);
+    float secondary_arm = pow(0.5 + 0.5 * cos(three_arm_detail), 8.0);
+    float arm_mask = clamp(primary_arm + secondary_arm * 0.35, 0.0, 1.0);
+    float spiral_structure = mix(0.48, 2.35, smoothstep(0.08, 0.82, arm_mask));
+
+    float rotating_streaks = 0.5 + 0.5 * sin(local_angle * 11.0 + radius * 3.8 + fine_noise * 2.2);
+    float hot_streaks = mix(0.78, 1.48, smoothstep(0.54, 0.96, rotating_streaks));
+
+    float inner_edge = smoothstep(innerDiskRadius, innerDiskRadius + 0.35, radius);
+    float outer_edge = 1.0 - smoothstep(outerDiskRadius - 1.2, outerDiskRadius, radius);
+    float disk_alpha = inner_edge * outer_edge;
+
+    float heat = pow(1.0 - radial_t, 1.55);
+    vec3 hot_color = vec3(1.0, 0.88, 0.58);
+    vec3 mid_color = vec3(1.0, 0.42, 0.12);
+    vec3 outer_color = vec3(0.42, 0.09, 0.035);
+    vec3 disk_color = mix(mid_color, outer_color, smoothstep(0.32, 1.0, radial_t));
+    disk_color = mix(disk_color, hot_color, 1.0 - smoothstep(0.0, 0.18, radial_t));
+
+    vec3 tangent = normalize(vec3(-hit.z, 0.0, hit.x));
+    float orbital_alignment = dot(normalize(ray.direction.xyz), tangent);
+    float doppler = pow(clamp(1.0 + orbital_alignment * 0.68, 0.34, 1.92), 2.0);
+
+    float turbulence = mix(0.78, 1.28, fine_noise) * mix(0.90, 1.14, grain_noise);
+    float optical_depth = clamp(stepSize * 22.0, 0.18, 2.05);
+    float luminosity = disk_alpha * optical_depth * (0.68 + heat * 4.4) * spiral_structure * hot_streaks * turbulence * doppler;
+
+    return disk_color * luminosity;
+}
+
 vec4 compute(inout vec3 position, inout vec3 velocity, inout Ray ray){
     // check if an object is in the event horizon or not
     // and perform the integration 
@@ -235,48 +281,25 @@ vec4 compute(inout vec3 position, inout vec3 velocity, inout Ray ray){
 
         vec3 d = (k1 + 2.0 * (k2 + k3) + k4) / 6.0;
 
-        vec3 ray_step = position + rk_delta + d * uStepSize;
-        float disk_radius = length(ray_step.xz);
+        vec3 previousPosition = position;
+        vec3 nextPosition = position + rk_delta;
 
-        if(uAccretionDisk == 1.0 && disk_radius > innerDiskRadius && disk_radius < outerDiskRadius && ray_step.y * position.y < pow(uStepSize, diskFactor)){
-            // ---------------------------------------
-            // --------- ACCRETION DISK --------------
-            // ---------------------------------------
-            float deltaDiskRadius = outerDiskRadius - innerDiskRadius;
-            float disk_dist = disk_radius - innerDiskRadius;
-            float radial_t = clamp(disk_dist / deltaDiskRadius, 0.0, 1.0);
-            float angle = atan(ray_step.z, ray_step.x);
-            float animatedAngle = angle - uDiskTime / pow(disk_radius, 1.5);
-            float spiralAngle = animatedAngle - disk_flow / sqrt(disk_radius);
-            vec3 uvw = vec3(
-                cos(spiralAngle) * radial_t,
-                sin(spiralAngle) * radial_t,
-                pow(radial_t, 2.0) + ((flow_rate / (PI * 2.0)) / deltaDiskRadius)
-            );
-            float disk_intensity = 1.0 - length(ray_step / vec3(outerDiskRadius, 1.0, outerDiskRadius));
-            disk_intensity *= smoothstep(innerDiskRadius, innerDiskRadius + 1.0, disk_radius);
+        if(uAccretionDisk == 1.0 && abs(previousPosition.y - nextPosition.y) > 0.0001 && previousPosition.y * nextPosition.y <= 0.0){
+            float crossing = previousPosition.y / (previousPosition.y - nextPosition.y);
+            if(crossing >= 0.0 && crossing <= 1.0){
+                vec3 disk_hit = mix(previousPosition, nextPosition, crossing);
+                float disk_radius = length(disk_hit.xz);
 
-            // float density_variation = fbm(2.0 * uvw, 5, 2.0, 1.0, 1.0);
-            float density_variation = fbm(uvw * vec3(5.0, 5.0, 2.5), 4, 2.4, 1.2, 1.0);
-            disk_intensity *= inversesqrt(disk_radius) * density_variation;
-            float dpth = step_size * (float(uMaxIterations) / 10.0) * disk_intensity;
-            
-            // -------> Doppler Shift
-            vec3 shiftD = 0.6 * cross(normalize(ray_step), vec3(0.0, 1.0, 0.0));
-            float v = dot(ray.direction.xyz, shiftD);
-            float dopplerShift = sqrt((1.0 - v)/(1.0 + v));
-            // -------> Gravitational Shift (Redshit)
-            float redshift = sqrt((1.0 - 2.0 / dist) / (1.0 - 2.0 / length(uCameraPosition)));
-            
-            vec3 color_rgb = vec3(1.0, 0.65, 0.50) * dopplerShift * redshift * dpth ;
+                if(disk_radius > innerDiskRadius && disk_radius < outerDiskRadius){
+                    vec3 hit_velocity = normalize(velocity + d * crossing);
+                    Ray background_ray;
+                    background_ray.origin = vec4(disk_hit, 1.0);
+                    background_ray.direction = vec4(hit_velocity, 0.0);
 
-            ray.origin = vec4(position, 1.0);
-            ray.direction = vec4(velocity, 0.0);
-
-            // Blending the accretion disk with the background
-            vec4 disk_color = GetColor(ray) + vec4(color_rgb, 1.0);
-
-            return disk_color;
+                    vec3 disk_emission = accretionDiskColor(disk_hit, background_ray, step_size);
+                    return GetColor(background_ray) + vec4(disk_emission, 1.0);
+                }
+            }
         }
 
         if(dist >= BACKGROUND_DISTANCE){
